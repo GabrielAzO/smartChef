@@ -4,7 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use App\Models\Recipe;
-use App\Services\RecipeEmbeddingService;
+use App\Services\EntityEmbeddingService;
 use Pgvector\Laravel\Vector;
 
 class GenerateRecipeEmbeddings extends Command
@@ -12,7 +12,7 @@ class GenerateRecipeEmbeddings extends Command
     protected $signature = 'recipes:generate-embeddings';
     protected $description = 'Generate and store embeddings for all recipes without one';
 
-    public function handle(RecipeEmbeddingService $embeddingService): int
+    public function handle(EntityEmbeddingService $embeddingService): int
     {
         $recipes = Recipe::query()->get();
 
@@ -24,15 +24,10 @@ class GenerateRecipeEmbeddings extends Command
         foreach ($recipes as $recipe) {
             $this->info("Generating embedding for recipe: {$recipe->title}");
 
-            try {
-                $embedding = $embeddingService->generateEmbedding($recipe);
-
-                $recipe->embedding = new Vector($embedding);
-                $recipe->save();
-
+            if ($embeddingService->generateAndSaveEmbedding($recipe)) {
                 $this->info("Saved embedding for: {$recipe->title}");
-            } catch (\Exception $e) {
-                $this->error("Failed for {$recipe->title}: " . $e->getMessage());
+            } else {
+                $this->error("Failed for {$recipe->title}");
             }
         }
 

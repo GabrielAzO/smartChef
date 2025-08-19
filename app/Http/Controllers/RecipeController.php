@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Recipe;
-use App\Services\PrismService;
+use App\Services\SearchService;
 use Exception;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -81,28 +81,23 @@ class RecipeController extends Controller
         $recipe->delete();
     }
 
-    public function search(Request $request)
+    public function search(Request $request, SearchService $searchService)
     {
         $query = $request->query('query');
+        $limit = (int) ($request->query('limit', 10));
 
         if (!$query) {
             return response()->json(['error' => 'Missing query.'], 422);
         }
 
-        $prism = new PrismService();
-        $response = $prism->getEmbedding($query);
-
-        $queryVector = $response->embeddings[0]->embedding;
-
-        if (!$queryVector) {
-            throw new Exception();
+        try {
+            $results = $searchService->searchRecipes($query, $limit);
+            return response()->json($results);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Failed to perform search.',
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        $results = Recipe::query()
-            ->nearestNeighbors('embedding', $queryVector, Distance::Cosine)
-            ->take(1)
-        ->get();
-
-        return response()->json($results);
     }
 }
