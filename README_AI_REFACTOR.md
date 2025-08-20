@@ -212,7 +212,36 @@ The old `PrismService` and `RecipeEmbeddingService` have been removed and replac
 
 ## Configuration
 
-The system uses the existing Prism configuration in `config/prism.php`. No additional configuration required for basic functionality.
+### Embedding API Setup
+
+The system now uses an external embedding API instead of Prism. Add these environment variables:
+
+```env
+EMBEDDING_API_URL=https://openapi.test/api/ai/embeddings
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_TIMEOUT=30
+EMBEDDING_RETRY_ATTEMPTS=3
+EMBEDDING_RETRY_DELAY=1000
+```
+
+The API expects POST requests with this JSON format:
+```json
+{
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "text": "text to embed"
+}
+```
+
+And returns the embedding vector as a flat array of floats.
+
+### Testing the Integration
+
+Test your API integration:
+```bash
+php artisan embeddings:test --text="Hello world"
+```
 
 ## Monitoring & Logging
 
