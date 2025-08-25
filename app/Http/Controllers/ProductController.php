@@ -13,6 +13,8 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
+use App\Services\PrismService;
+use Pgvector\Laravel\Distance;
 
 class ProductController extends Controller
 {
@@ -159,6 +161,93 @@ class ProductController extends Controller
         } catch (\Exception $e) {
             DB::rollback();
             return redirect()->back()->withErrors(['error' => 'Erro ao salvar produto: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Search for products using text query and embeddings
+     */
+    public function search(Request $request)
+    {
+        $request->validate([
+            'query' => 'required|string|min:1',
+            'limit' => 'nullable|integer|min:1|max:50',
+            'include_inactive' => 'nullable|boolean'
+        ]);
+
+        $query = $request->query('query');
+        $limit = $request->query('limit', 10);
+        $includeInactive = $request->query('include_inactive', false);
+
+        try {
+            // Start with a base query
+            $productsQuery = Product::with([
+                'groupProduct', 
+                'detail', 
+                'images' => function($query) {
+                    $query->active()->ordered();
+                },
+                'recipes:id,recipe_name',
+                'contents:id,nome_conteudo'
+            ]);
+
+            // Filter by status unless including inactive
+            if (!$includeInactive) {
+                $productsQuery->where('status', true);
+            }
+
+            // Try embedding search first if PrismService is available
+            try {
+                $prism = new PrismService();
+                $response = $prism->getEmbedding($query);
+                $embedding = $prism->extractEmbeddingFromResponse($response);
+
+                if ($embedding && is_array($embedding)) {
+                    // Embedding-based search
+                    $products = $productsQuery
+                        ->nearestNeighbors('embedding', $embedding, Distance::Cosine)
+                        ->take($limit)
+                        ->get()
+                        ->map(function ($product) {
+                            return collect($product)->except('embedding')->toArray();
+                        });
+                } else {
+                    throw new \Exception('Failed to generate embedding');
+                }
+            } catch (\Exception $e) {
+                // Fallback to text-based search if embedding fails
+                $products = $productsQuery
+                    ->where(function($q) use ($query) {
+                        $q->where('descricao', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('codigo_padrao', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('sku', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('marca', 'ILIKE', '%' . $query . '%')
+                          ->orWhereHas('groupProduct', function($gq) use ($query) {
+                              $gq->where('name', 'ILIKE', '%' . $query . '%');
+                          })
+                          ->orWhereHas('detail', function($dq) use ($query) {
+                              $dq->where('especificacao_produto', 'ILIKE', '%' . $query . '%')
+                                ->orWhere('perfil_sabor', 'ILIKE', '%' . $query . '%')
+                                ->orWhere('descricao_tabela_nutricional', 'ILIKE', '%' . $query . '%')
+                                ->orWhere('descricao_lista_ingredientes', 'ILIKE', '%' . $query . '%')
+                                ->orWhere('descricao_modos_preparo', 'ILIKE', '%' . $query . '%');
+                          });
+                    })
+                    ->take($limit)
+                    ->get()
+                    ->map(function ($product) {
+                        return collect($product)->except('embedding')->toArray();
+                    });
+            }
+
+            return response()->json([
+                'products' => $products,
+                'query' => $query,
+                'total' => $products->count()
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Search failed: ' . $e->getMessage()], 500);
         }
     }
 

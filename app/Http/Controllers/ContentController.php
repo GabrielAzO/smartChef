@@ -7,6 +7,8 @@ use App\Models\Product;
 use App\Models\Recipe;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
+use App\Services\PrismService;
+use Pgvector\Laravel\Distance;
 
 class ContentController extends Controller
 {
@@ -95,6 +97,94 @@ class ContentController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Search for contents using text query and embeddings
+     */
+    public function search(Request $request)
+    {
+        $request->validate([
+            'query' => 'required|string|min:1',
+            'limit' => 'nullable|integer|min:1|max:50',
+            'include_inactive' => 'nullable|boolean',
+            'content_type' => 'nullable|string',
+            'channel' => 'nullable|string'
+        ]);
+
+        $query = $request->query('query');
+        $limit = $request->query('limit', 10);
+        $includeInactive = $request->query('include_inactive', false);
+        $contentType = $request->query('content_type');
+        $channel = $request->query('channel');
+
+        try {
+            // Start with a base query
+            $contentsQuery = Content::with(['recipes', 'products']);
+
+            // Filter by status unless including inactive
+            if (!$includeInactive) {
+                $contentsQuery->where('status', true);
+            }
+
+            // Additional filters
+            if ($contentType) {
+                $contentsQuery->where('tipo_conteudo', $contentType);
+            }
+
+            if ($channel) {
+                $contentsQuery->where('canal', $channel);
+            }
+
+            // Try embedding search first if PrismService is available
+            try {
+                $prism = new PrismService();
+                $response = $prism->getEmbedding($query);
+                $embedding = $prism->extractEmbeddingFromResponse($response);
+
+                if ($embedding && is_array($embedding)) {
+                    // Embedding-based search
+                    $contents = $contentsQuery
+                        ->nearestNeighbors('embedding', $embedding, Distance::Cosine)
+                        ->take($limit)
+                        ->get()
+                        ->map(function ($content) {
+                            return collect($content)->except('embedding')->toArray();
+                        });
+                } else {
+                    throw new \Exception('Failed to generate embedding');
+                }
+            } catch (\Exception $e) {
+                // Fallback to text-based search if embedding fails
+                $contents = $contentsQuery
+                    ->where(function($q) use ($query) {
+                        $q->where('nome_conteudo', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('content_code', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('descricao_conteudo', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('descricao_tabela_nutricional', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('descricao_lista_ingredientes', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('descricao_modos_preparo', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('descricao_rendimentos', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('tipo_conteudo', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('pilares', 'ILIKE', '%' . $query . '%')
+                          ->orWhere('canal', 'ILIKE', '%' . $query . '%');
+                    })
+                    ->take($limit)
+                    ->get()
+                    ->map(function ($content) {
+                        return collect($content)->except('embedding')->toArray();
+                    });
+            }
+
+            return response()->json([
+                'contents' => $contents,
+                'query' => $query,
+                'total' => $contents->count()
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Search failed: ' . $e->getMessage()], 500);
+        }
     }
 
     /**
